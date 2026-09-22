@@ -1,0 +1,8 @@
+node_modules/
+.vercel
+.env
+.env.local
+.env*.local
+raw_main.json
+raw_gameonly.json
+.DS_Store
