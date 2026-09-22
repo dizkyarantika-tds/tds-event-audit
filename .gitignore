@@ -6,3 +6,4 @@ node_modules/
 raw_main.json
 raw_gameonly.json
 .DS_Store
+data/

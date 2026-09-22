@@ -25,11 +25,19 @@ bucket for telemetry that has no package spec behind it at all.
 
 ## Run
 
+**Live**: <https://tds-event-audit.vercel.app> — auto-deploys from `main` on push
+(Vercel project `dizkyarantika-tds-projects/tds-event-audit`, git-connected to
+this repo).
+
+**Local**:
+
 ```bash
-python3 -m http.server 4174 --directory event-reconciliation-tool
+python3 -m http.server 4174
 ```
 
 Open <http://localhost:4174>. Must be HTTP — `file://` blocks the JSON fetch.
+Data still loads from the live Blob URL (see "Data pipeline" below), so local
+runs see real, current data with no setup.
 
 ## Data model
 
@@ -175,19 +183,33 @@ serialize-as-string behavior, not treated as a real mismatch).
 
 ## Data pipeline
 
-Two raw pulls, merged by `build_dataset.py` into one star-schema
-`data/reconciliation.json` (string-interned dictionary + integer-indexed
-fact rows, ~8.8 MB for 152,992 facts, 16 columns including `EVENT_MATCH_STATUS`):
+**Data is not part of this deployment.** The frontend fetches a single JSON
+file — `DATA_URL` in `app.js` — from **Vercel Blob** storage
+(`tds-event-audit-data` store, public, path `reconciliation.json`), not a
+file in this repo. That decouples data freshness from app deployment: pushing
+code here only redeploys the app; the data updates independently.
 
-- `raw_main.json` — `SELECT ... MATCH_STATUS, EVENT_MATCH_STATUS, ... WHERE MATCH_STATUS IN ('BOTH','PACKAGE_ONLY') AND APP_NAME IS NOT NULL` (55,625 rows)
-- `raw_gameonly.json` — `MATCH_STATUS='GAME_ONLY'`, plus `EVENT_MATCH_STATUS`, scoped to app-versions already in the main pull (97,367 rows, see "Why GAME_ONLY is scoped" above)
+The blob is written by **`airflow/refresh_reconciliation_data.py`** — a task
+meant to be added to the end of whichever Airflow DAG already refreshes
+`TDS_DB.BI_DEV.ANALYTICS_EVENT_RECONCILIATION` (downstream of that refresh,
+so it always runs against fresh data). It re-runs the two scoped queries
+`build_dataset.py` has always used and rebuilds the identical star-schema
+JSON (string-interned dictionary + integer-indexed fact rows, ~8.8 MB /
+152,992 facts today, 16 columns including `EVENT_MATCH_STATUS`):
 
-To refresh: re-run both pulls, overwrite the two raw files, `python3
-build_dataset.py`, then **bump the `?v=` query on `app.js`/`styles.css` in
-`index.html` and `DATA_VERSION` in `app.js`** — the preview proxy has
-repeatedly been observed serving a stale cached copy after a rebuild, even
-across hard-reloads and new tabs, so a version bump is the only reliable way
-to force a refetch.
+- `MATCH_STATUS IN ('BOTH','PACKAGE_ONLY') AND APP_NAME IS NOT NULL` (55,625 rows)
+- `MATCH_STATUS='GAME_ONLY'`, scoped to app-versions already in the first query (97,367 rows, see "Why GAME_ONLY is scoped" above)
+
+It overwrites the same blob path daily (`overwrite=True`, no random suffix,
+1-hour cache) and refuses to publish if the pull comes back under 1,000
+facts, so a transient Snowflake hiccup can't blank out the live tool.
+
+**Local/manual rebuild** (`build_dataset.py` + the raw-pull pattern in this
+file's git history) still works for ad hoc local testing, but is no longer
+how production data gets published — that's the Airflow task's job now.
+`build_dataset.py`'s transform logic must stay in sync with the copy inlined
+in `airflow/refresh_reconciliation_data.py` (they're intentionally
+duplicated, not imported, since the Airflow task lives in a different repo).
 
 ## Known gaps (mockup, not production)
 

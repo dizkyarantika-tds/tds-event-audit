@@ -33,7 +33,14 @@ const ST = { PACKAGE_ONLY: 0, BOTH: 1, GAME_ONLY: 2 };
 const ST_LABEL = { 0: 'Package-only', 1: 'Used', 2: 'Game-only' };
 const ST_CLASS = { 0: 'package-only', 1: 'used', 2: 'game-only' };
 const ST_DOT = { 0: '#4d5766', 1: '#3fb950', 2: '#a882ff' };
-const DATA_VERSION = 3;
+
+// Data lives in Vercel Blob storage, not this deployment -- an Airflow task
+// overwrites this same path daily, right after it refreshes the source
+// Snowflake table, so freshness is tied to that pipeline instead of a guessed
+// cron time. `cache: 'no-store'` bypasses the browser's HTTP cache so every
+// page load re-checks the CDN, which itself refreshes within the blob's
+// cache-control max-age (1 hour) after each overwrite.
+const DATA_URL = 'https://fk7hnthujtfc7ylv.public.blob.vercel-storage.com/reconciliation.json';
 
 // design tokens (design_handoff_event_reconciliation/README.md)
 const TOK = { ok: '#3fb950', warn: '#d29922', bad: '#f0616d', accent: '#5b93ff', gameOnly: '#a882ff' };
@@ -106,7 +113,7 @@ const state = {
 // bootstrap
 // ---------------------------------------------------------------------------
 
-fetch('data/reconciliation.json?v=' + DATA_VERSION)
+fetch(DATA_URL, { cache: 'no-store' })
   .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
   .then(d => {
     DATA = d; S = d.strings;
