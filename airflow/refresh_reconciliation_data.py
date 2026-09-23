@@ -1,47 +1,24 @@
-"""
-Event Reconciliation tool -- daily data refresh task.
-
-Reference implementation to adapt into the existing Airflow DAG that refreshes
-TDS_DB.BI_DEV.ANALYTICS_EVENT_SPEC_RECONCILIATION. Add this as the LAST task in that
-DAG (downstream of the refresh task) so it always runs against fresh data:
-
-    refresh_reconciliation_table >> refresh_event_audit_json
-
-It re-pulls the two scoped queries this project's build_dataset.py has always
-used, rebuilds the same star-schema JSON the frontend (app.js) expects, and
-overwrites the single stable blob at https://<store>.public.blob.vercel-storage.com/reconciliation.json.
-No Vercel-side rebuild/redeploy is needed for a data refresh -- the static app
-fetches this URL directly (see DATA_URL in app.js).
-
-This is a standalone port of build_dataset.py's transform logic (not an
-import of it) since this script is meant to live in the Airflow DAGs repo,
-not the app repo. If the fact column layout ever changes, update BOTH:
-  - app.js's `C` column-index map and `cols` comment
-  - the FACT COLUMNS section below
-
-Requires:
-    pip install snowflake-connector-python vercel
-
-Configure via Airflow Variables (or swap for your existing secrets backend):
-    SNOWFLAKE_CONN_ID              -- an existing Airflow Snowflake connection
-                                       (reuse whatever the table-refresh task uses)
-    VERCEL_BLOB_READ_WRITE_TOKEN   -- from the Vercel dashboard: the
-                                       tds-event-audit project -> Storage ->
-                                       tds-event-audit-data -> copy the
-                                       BLOB_READ_WRITE_TOKEN. Store this as an
-                                       Airflow Variable/Secret, never in code.
-"""
-
-from __future__ import annotations
-
-import datetime as dt
+import json
 import re
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
 
-from airflow.decorators import task
+from airflow.sdk import DAG, Variable, task
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
-from airflow.models import Variable
 
-SNOWFLAKE_CONN_ID = "snowflake_ds"  # matches conn_id used by the "base" task in dsi_analytics_event_spec_reconciliation.py
+from utils.dag_builder import default_args, task_default_args
+
+DAG_DIR = Path(__file__).parent
+
+# --- Event Audit tool refresh -------------------------------------------
+# Pulls the two scoped queries the tool has always used, rebuilds the same
+# star-schema JSON its frontend expects, and publishes it to Vercel Blob so
+# https://tds-event-audit.vercel.app always shows today's data. Runs after
+# the "base" task below so it never reads a half-refreshed table.
+# Full context: https://github.com/dizkyarantika-tds/tds-event-audit
 
 MAIN_QUERY = """
     SELECT APP_NAME, APP_VERSION, PACKAGE, PACKAGE_VERSION, PACKAGE_VERSION_BASE,
@@ -52,10 +29,9 @@ MAIN_QUERY = """
     WHERE MATCH_STATUS IN ('BOTH','PACKAGE_ONLY') AND APP_NAME IS NOT NULL
 """
 
-# Scoped to app-versions that already appear in MAIN_QUERY -- see the app's
-# README ("Why GAME_ONLY is scoped") for why the unscoped ~1.8M-row table
-# isn't pulled whole: those app-versions are unreachable via the UI's App /
-# App Version filters anyway, since those filters are built from MAIN_QUERY.
+# Scoped to app-versions that already appear in MAIN_QUERY -- an app-version
+# with no package data can never be selected in the tool's filters anyway,
+# so this avoids pulling the full ~1.8M-row GAME_ONLY population for nothing.
 GAMEONLY_QUERY = """
     SELECT g.APP_NAME, g.APP_VERSION, g.EVENT_NAME_GAME, g.FIELD_NAME_GAME,
            g.FIELD_TYPE_GAME, g.EVENT_MATCH_STATUS, g.FIRST_SEEN_VERSION_GAME,
@@ -81,7 +57,7 @@ COLS = [
 
 
 def _build_dataset(main_rows: list[dict], gameonly_rows: list[dict]) -> dict:
-    """Star-schema transform -- identical logic to build_dataset.py."""
+    """Star-schema transform -- identical logic to build_dataset.py in the app repo."""
     strings: list[str] = []
     str_idx: dict[str, int] = {}
 
@@ -154,7 +130,7 @@ def _build_dataset(main_rows: list[dict], gameonly_rows: list[dict]) -> dict:
     packages_list = sorted(packages, key=lambda i: strings[i])
 
     return {
-        "generatedAt": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M"),
+        "generatedAt": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
         "strings": strings,
         "cols": COLS,
         "statusCodes": STATUS_CODE,
@@ -167,34 +143,74 @@ def _build_dataset(main_rows: list[dict], gameonly_rows: list[dict]) -> dict:
     }
 
 
-@task(task_id="refresh_event_audit_json")
-def refresh_event_audit_json() -> None:
-    import json
-    from vercel.blob import BlobClient
+def _upload_to_vercel_blob(pathname: str, body: bytes, token: str, content_type: str) -> str:
+    """
+    Plain-stdlib PUT to Vercel Blob's REST API -- no @vercel/blob dependency
+    needed. Reverse-engineered from the official JS SDK (unpkg.com/@vercel/blob)
+    and verified against the live API before this file was written.
+    """
+    store_id = token.split("_")[3]
+    url = f"https://vercel.com/api/blob/?{urllib.parse.urlencode({'pathname': pathname})}"
+    req = urllib.request.Request(url, data=body, method="PUT", headers={
+        "authorization": f"Bearer {token}",
+        "x-api-version": "12",
+        "x-vercel-blob-store-id": store_id,
+        "x-vercel-blob-access": "public",
+        "x-content-type": content_type,
+        "x-add-random-suffix": "0",
+        "x-allow-overwrite": "1",
+        "x-cache-control-max-age": "3600",
+    })
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        return json.loads(resp.read())["url"]
 
-    hook = SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID)
-    main_rows = hook.get_pandas_df(MAIN_QUERY).to_dict("records")
-    gameonly_rows = hook.get_pandas_df(GAMEONLY_QUERY).to_dict("records")
 
-    dataset = _build_dataset(main_rows, gameonly_rows)
+with DAG(
+    dag_id="dsi__analytics_event_spec_reconciliation",
+    tags=["DSI"],
+    default_args=default_args | task_default_args | {
+        "email": ["dizky.darmawan@tripledotstudios.com"],
+        "retries": 0,
+    },
+    start_date=datetime(2024, 8, 1),
+    schedule="0 5 * * *",
+    catchup=False,
+    max_active_runs=1,
+    doc_md="""
+        ## analytics_event_spec_reconciliation
+        Dataset reconciling the analytics events declared in the Tripledot package specs against the events actually observed firing in production, broken down by app version, event, field and field source.
+        See [README](https://github.com/tripledotstudios/tds-dsi-pipelines/blob/main/dags/dsi_analytics_event_spec_reconciliation/README.md).
 
-    # sanity check before publishing -- refuse to overwrite good data with an
-    # empty/broken pull (e.g. a transient Snowflake or connection issue)
-    if len(dataset["facts"]) < 1000:
-        raise ValueError(
-            f"refresh_event_audit_json: only {len(dataset['facts'])} facts pulled, "
-            "expected 100k+. Refusing to overwrite the published dataset."
-        )
+        Also refreshes the Event Audit tool (https://tds-event-audit.vercel.app)
+        as a downstream task -- see refresh_event_audit_tool below.
+    """,
+) as dag:
 
-    body = json.dumps(dataset, separators=(",", ":")).encode("utf-8")
-
-    client = BlobClient(token=Variable.get("VERCEL_BLOB_READ_WRITE_TOKEN"))
-    client.put(
-        "reconciliation.json",
-        body,
-        access="public",
-        add_random_suffix=False,
-        overwrite=True,
-        cache_control_max_age=3600,
-        content_type="application/json",
+    temp = SQLExecuteQueryOperator(
+        task_id="base",
+        conn_id="snowflake_ds",
+        sql=(DAG_DIR / "sql" / "analytics_event_spec_reconciliation.sql").read_text()
     )
+
+    @task(task_id="refresh_event_audit_tool")
+    def refresh_event_audit_tool():
+        hook = SnowflakeHook(snowflake_conn_id="snowflake_ds")
+        main_rows = hook.get_pandas_df(MAIN_QUERY).to_dict("records")
+        gameonly_rows = hook.get_pandas_df(GAMEONLY_QUERY).to_dict("records")
+
+        dataset = _build_dataset(main_rows, gameonly_rows)
+
+        # refuse to publish a suspiciously small pull (e.g. a transient
+        # Snowflake issue) rather than blanking out the live tool
+        if len(dataset["facts"]) < 1000:
+            raise ValueError(
+                f"refresh_event_audit_tool: only {len(dataset['facts'])} facts pulled, "
+                "expected 100k+. Refusing to overwrite the published dataset."
+            )
+
+        body = json.dumps(dataset, separators=(",", ":")).encode("utf-8")
+        token = Variable.get("VERCEL_BLOB_READ_WRITE_TOKEN")
+        url = _upload_to_vercel_blob("reconciliation.json", body, token, "application/json")
+        print(f"published {len(dataset['facts'])} facts -> {url}")
+
+    temp >> refresh_event_audit_tool()
