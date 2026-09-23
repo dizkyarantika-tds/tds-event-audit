@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Analytics Package Implementation -- Event Reconciliation
-// Data: TDS_DB.BI_DEV.ANALYTICS_EVENT_RECONCILIATION (local snapshot)
+// Data: TDS_DB.BI_DEV.ANALYTICS_EVENT_SPEC_RECONCILIATION (local snapshot)
 // UI: design_handoff_event_reconciliation/ (high-fidelity spec -- colors,
 // layout, copy and interaction rules below mirror its README 1:1).
 //

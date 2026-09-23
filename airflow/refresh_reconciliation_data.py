@@ -2,7 +2,7 @@
 Event Reconciliation tool -- daily data refresh task.
 
 Reference implementation to adapt into the existing Airflow DAG that refreshes
-TDS_DB.BI_DEV.ANALYTICS_EVENT_RECONCILIATION. Add this as the LAST task in that
+TDS_DB.BI_DEV.ANALYTICS_EVENT_SPEC_RECONCILIATION. Add this as the LAST task in that
 DAG (downstream of the refresh task) so it always runs against fresh data:
 
     refresh_reconciliation_table >> refresh_event_audit_json
@@ -41,14 +41,14 @@ from airflow.decorators import task
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 from airflow.models import Variable
 
-SNOWFLAKE_CONN_ID = "snowflake_default"  # TODO: point at the connection the table-refresh task uses
+SNOWFLAKE_CONN_ID = "snowflake_ds"  # matches conn_id used by the "base" task in dsi_analytics_event_spec_reconciliation.py
 
 MAIN_QUERY = """
     SELECT APP_NAME, APP_VERSION, PACKAGE, PACKAGE_VERSION, PACKAGE_VERSION_BASE,
            EVENT_NAME_PACKAGE, FIELD_NAME_PACKAGE, FIELD_TYPE_PACKAGE, FIELD_TYPE_GAME,
            DECORATED_BY, IS_PRERELEASE, MATCH_STATUS, EVENT_MATCH_STATUS,
            FIRST_SEEN_VERSION_GAME, LAST_SEEN_VERSION_GAME, LAST_SEEN_DATE_GAME
-    FROM TDS_DB.BI_DEV.ANALYTICS_EVENT_RECONCILIATION
+    FROM TDS_DB.BI_DEV.ANALYTICS_EVENT_SPEC_RECONCILIATION
     WHERE MATCH_STATUS IN ('BOTH','PACKAGE_ONLY') AND APP_NAME IS NOT NULL
 """
 
@@ -60,10 +60,10 @@ GAMEONLY_QUERY = """
     SELECT g.APP_NAME, g.APP_VERSION, g.EVENT_NAME_GAME, g.FIELD_NAME_GAME,
            g.FIELD_TYPE_GAME, g.EVENT_MATCH_STATUS, g.FIRST_SEEN_VERSION_GAME,
            g.LAST_SEEN_VERSION_GAME, g.LAST_SEEN_DATE_GAME
-    FROM TDS_DB.BI_DEV.ANALYTICS_EVENT_RECONCILIATION g
+    FROM TDS_DB.BI_DEV.ANALYTICS_EVENT_SPEC_RECONCILIATION g
     WHERE g.MATCH_STATUS = 'GAME_ONLY' AND g.APP_NAME IS NOT NULL
       AND EXISTS (
-        SELECT 1 FROM TDS_DB.BI_DEV.ANALYTICS_EVENT_RECONCILIATION r
+        SELECT 1 FROM TDS_DB.BI_DEV.ANALYTICS_EVENT_SPEC_RECONCILIATION r
         WHERE r.MATCH_STATUS IN ('BOTH','PACKAGE_ONLY') AND r.APP_NAME IS NOT NULL
           AND r.APP_NAME = g.APP_NAME AND r.APP_VERSION = g.APP_VERSION
       )
