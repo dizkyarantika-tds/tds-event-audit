@@ -110,27 +110,69 @@ const state = {
 };
 
 // ---------------------------------------------------------------------------
-// bootstrap
+// bootstrap / refresh
 // ---------------------------------------------------------------------------
 
-fetch(DATA_URL, { cache: 'no-store' })
-  .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-  .then(d => {
-    DATA = d; S = d.strings;
-    // index.html already provides the sibling <span class="dot"> next to
-    // each of these -- setting innerHTML here previously nested a *second*
-    // dot inside the text span, showing two dots in an awkward stack.
-    const cached = DATA.generatedAt ? `last cached ${DATA.generatedAt} UTC` : 'ready';
-    document.getElementById('cacheStatus').textContent = cached;
-    document.getElementById('cacheStatus2').textContent = cached;
-    initUI();
-    render();
-  })
-  .catch(err => {
-    document.getElementById('fatal').hidden = false;
-    document.getElementById('fatal').textContent = 'Failed to load data/reconciliation.json: ' + err.message;
-    document.getElementById('layer1').hidden = true;
+// Every rebuild (build_dataset.py / the Airflow task) re-interns its string
+// dictionary from scratch, so the same app/event/etc. can land at a
+// different integer index in a fresh pull than it had before. Swapping in
+// new DATA without accounting for that would leave all of state's stored
+// indices (selections, expanded groups, the open deepdive) silently
+// pointing at the wrong strings. This re-resolves everything by string
+// value first, dropping only what no longer exists in the new pull.
+function remapStateToNewData(newData) {
+  const newIdx = new Map();
+  newData.strings.forEach((s, i) => newIdx.set(s, i));
+
+  function remapSet(sel) {
+    if (sel === null) return null;
+    const mapped = new Set();
+    sel.forEach(i => { const ni = newIdx.get(S[i]); if (ni !== undefined) mapped.add(ni); });
+    return mapped.size ? mapped : null; // everything in it vanished -- fall back to "all" rather than "none"
+  }
+
+  state.selectedApps = remapSet(state.selectedApps);
+  state.selectedAppVersions = remapSet(state.selectedAppVersions);
+  state.selectedPackages = remapSet(state.selectedPackages);
+  state.selectedPackageVersions = remapSet(state.selectedPackageVersions);
+  state.selectedEvents = remapSet(state.selectedEvents);
+  state.selectedFields = remapSet(state.selectedFields);
+
+  const newExpanded = new Set();
+  state.expandedGroups.forEach(key => {
+    const [a, v] = key.split(':').map(Number);
+    const na = newIdx.get(S[a]), nv = newIdx.get(S[v]);
+    if (na !== undefined && nv !== undefined) newExpanded.add(na + ':' + nv);
   });
+  state.expandedGroups = newExpanded;
+
+  if (state.page2) {
+    const ne = newIdx.get(S[state.page2.event]), na = newIdx.get(S[state.page2.app]), nv = newIdx.get(S[state.page2.ver]);
+    state.page2 = (ne !== undefined && na !== undefined && nv !== undefined) ? { event: ne, app: na, ver: nv } : null;
+  }
+}
+
+function loadData(isRefresh) {
+  return fetch(DATA_URL, { cache: 'no-store' })
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(d => {
+      if (isRefresh) remapStateToNewData(d);
+      DATA = d; S = d.strings;
+      // index.html already provides the sibling <span class="dot"> next to
+      // each of these -- setting innerHTML here previously nested a *second*
+      // dot inside the text span, showing two dots in an awkward stack.
+      const cached = DATA.generatedAt ? `last cached ${DATA.generatedAt} UTC` : 'ready';
+      document.getElementById('cacheStatus').textContent = cached;
+      document.getElementById('cacheStatus2').textContent = cached;
+      if (isRefresh) { refreshAllDropdowns(); render(); } else { initUI(); render(); }
+    });
+}
+
+loadData(false).catch(err => {
+  document.getElementById('fatal').hidden = false;
+  document.getElementById('fatal').textContent = 'Failed to load data: ' + err.message;
+  document.getElementById('layer1').hidden = true;
+});
 
 // ---------------------------------------------------------------------------
 // dropdown component -- no checkboxes, blue highlight for selected rows,
@@ -286,6 +328,19 @@ function initUI() {
     allItems: fieldsInScope, blankAll: true,
     getSelected: () => state.selectedFields, setSelected: v => { state.selectedFields = v; },
     onChange: () => render(),
+  });
+
+  document.getElementById('refreshBtn').addEventListener('click', () => {
+    const btn = document.getElementById('refreshBtn');
+    btn.disabled = true; btn.textContent = 'Refreshing…';
+    loadData(true)
+      .then(() => { btn.textContent = 'Refresh'; })
+      .catch(err => {
+        btn.textContent = 'Refresh failed';
+        console.error('refresh failed:', err);
+        setTimeout(() => { btn.textContent = 'Refresh'; }, 2500);
+      })
+      .finally(() => { btn.disabled = false; });
   });
 
   document.getElementById('resetBtn').addEventListener('click', () => {
