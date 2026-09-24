@@ -8,6 +8,7 @@ from pathlib import Path
 from airflow.sdk import DAG, Variable, task
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
+from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
 
 from utils.dag_builder import default_args, task_default_args
 
@@ -173,7 +174,12 @@ with DAG(
         "retries": 0,
     },
     start_date=datetime(2024, 8, 1),
-    schedule="0 5 * * *",
+    # Same cron as game_events_spec (owned by artem.shambalev) on purpose: our
+    # source tables are built by that DAG's game_events_spec_current task, and
+    # matching its schedule exactly means both DAGs' logical dates line up, so
+    # the sensor below matches "today's run" to "today's run" with no manual
+    # date-offset math.
+    schedule="0 6 * * *",
     catchup=False,
     max_active_runs=1,
     doc_md="""
@@ -181,10 +187,24 @@ with DAG(
         Dataset reconciling the analytics events declared in the Tripledot package specs against the events actually observed firing in production, broken down by app version, event, field and field source.
         See [README](https://github.com/tripledotstudios/tds-dsi-pipelines/blob/main/dags/dsi_analytics_event_spec_reconciliation/README.md).
 
-        Also refreshes the Event Audit tool (https://tds-event-audit.vercel.app)
-        as a downstream task -- see refresh_event_audit_tool below.
+        Waits on game_events_spec's game_events_spec_current task (same day)
+        before building, since that's what produces our observed-side source
+        table. Also refreshes the Event Audit tool
+        (https://tds-event-audit.vercel.app) as a downstream task -- see
+        refresh_event_audit_tool below.
     """,
 ) as dag:
+
+    wait_for_game_events_spec = ExternalTaskSensor(
+        task_id="wait_for_game_events_spec",
+        external_dag_id="game_events_spec",
+        external_task_id="game_events_spec_current",
+        allowed_states=["success"],
+        failed_states=["failed", "skipped", "upstream_failed"],
+        poke_interval=300,       # check every 5 minutes
+        timeout=60 * 60 * 4,     # give up after 4 hours
+        mode="reschedule",       # free the worker slot between checks instead of blocking it
+    )
 
     temp = SQLExecuteQueryOperator(
         task_id="base",
@@ -213,4 +233,4 @@ with DAG(
         url = _upload_to_vercel_blob("reconciliation.json", body, token, "application/json")
         print(f"published {len(dataset['facts'])} facts -> {url}")
 
-    temp >> refresh_event_audit_tool()
+    wait_for_game_events_spec >> temp >> refresh_event_audit_tool()
