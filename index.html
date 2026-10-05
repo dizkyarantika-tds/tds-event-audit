@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=7">
+<link rel="stylesheet" href="styles.css?v=8">
 </head>
 <body>
 <div id="app">
@@ -61,7 +61,7 @@
       <section class="panel">
         <div class="panel-head">
           <h2>App to Package Usage</h2>
-          <label class="check-inline"><input type="checkbox" id="rcVersionChk"> <span>RC Version</span></label>
+          <label class="check-inline"><input type="checkbox" id="rcVersionChk" checked> <span>RC Version</span></label>
         </div>
         <div class="table-wrap usage-wrap">
           <table class="dtable">
@@ -94,13 +94,12 @@
               <div class="dd-panel" id="fieldPanel" hidden></div>
             </div>
           </div>
-          <label class="check-inline"><input type="checkbox" id="decoratedChk"> <span>Decorated Field</span></label>
         </div>
         <div class="chips-row" id="eventChips" hidden style="padding: 9px 14px; border-bottom: 1px solid var(--panel-border); background: #12171f;"></div>
         <div class="table-wrap events-wrap">
           <table class="dtable" id="eventsTable">
             <colgroup>
-              <col><col><col><col><col><col><col>
+              <col><col><col><col><col><col><col><col>
             </colgroup>
             <tbody id="eventsBody"></tbody>
           </table>
@@ -136,18 +135,22 @@
         <div class="deep-stats">
           <div class="deep-stat"><div class="deep-stat-label">Field usage</div><div class="deep-stat-value" id="deepFieldUsage"></div></div>
           <div class="deep-stat"><div class="deep-stat-label">Type mismatches</div><div class="deep-stat-value" id="deepTypeMismatches"></div></div>
+          <div class="deep-stat"><div class="deep-stat-label">Game-only field</div><div class="deep-stat-value" id="deepGameOnly"></div></div>
         </div>
       </div>
 
       <section class="panel">
         <div class="panel-head">
           <h2>Fields</h2>
-          <label class="check-inline"><input type="checkbox" id="issuesOnlyChk"> <span>Issues only</span></label>
+          <div class="panel-head-checks">
+            <label class="check-inline"><input type="checkbox" id="deepDecoratedChk" checked> <span>Decorated Field</span></label>
+            <label class="check-inline"><input type="checkbox" id="issuesOnlyChk"> <span>Issues only</span></label>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="dtable pad8">
             <thead>
-              <tr><th>Field Name</th><th>Type in Game</th><th>Type in Package</th><th>Status</th><th>First Seen</th><th>Last Seen</th></tr>
+              <tr><th>Field Name</th><th>Type in Game</th><th>Type in Package</th><th>Status</th><th>First Seen</th><th>Last Seen</th><th>Decorated Field</th></tr>
             </thead>
             <tbody id="fieldsBody"></tbody>
           </table>
@@ -176,6 +179,6 @@
   <div class="empty-state" id="fatal" hidden></div>
 
 </div>
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

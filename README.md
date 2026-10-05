@@ -14,8 +14,8 @@ Notable interaction details carried over: an emptied filter (unticking `All`
 with nothing re-checked) reverts to "all" once its dropdown closes rather
 than silently filtering to nothing; every active filter/bucket/checkbox
 value appears as a removable "In scope" chip, in the filter bar for the four
-main filters + RC Version, and in the Events panel for Event + status +
-Decorated Field.
+main filters, and in the Events panel for Event + status. (RC Version is on
+by default and deliberately never shown as a chip.)
 
 This replaced an earlier, differently-structured local tool in this same
 folder (single-page event list + deepdive). The current version has: a
@@ -115,17 +115,26 @@ leaving everything silently checked.
 Dependency chain: App → App Version options and Package options both narrow;
 (App + App Version + Package) → Package Version narrows tightest, since it's
 a live scan of the fact table rather than a static index (three filters at
-once). **RC Version** (`IS_PRERELEASE`) sits in the usage panel header and
-cascades everywhere — scorecards, usage table, and events. **Decorated
-Field** sits in the Events panel header and narrows *only* the events list
-(confirmed with the user before building — `IS_PRERELEASE`/`DECORATED_BY`
-are always null on game-only rows, so RC Version alone would already hide
-every game-only row).
+once). **RC Version** (`IS_PRERELEASE`) sits in the usage panel header, is
+**checked by default**, and cascades everywhere — scorecards, usage table,
+events, and the deepdive; unchecking it excludes prerelease rows. Layer 1
+**always includes decorated fields** (there is no Layer-1 Decorated Field
+filter); the only Decorated Field toggle is local to the Layer-2 Fields
+panel (see below). Game-only rows always carry `IS_PRERELEASE=0` and a null
+`DECORATED_BY`, so neither setting can hide them.
+
+**Package / Package Version filters and game-only fields.** A game-only
+field has no package of its own, so these filters would otherwise drop every
+undeclared field as soon as a package is picked. Instead an extra field
+follows its event: it passes when the same (app, version, event) has a
+declared row from a selected package/version. Events with no package
+context at all (`EVENT_MATCH_STATUS=GAME_ONLY`) still can't match a package
+filter.
 
 ## Scorecards
 
-All five are computed over the four main filters + RC Version (not
-Decorated Field, not the bucket tabs — those are events-list-only):
+All five are computed over the four main filters + RC Version (not the
+bucket tabs — those are events-list-only):
 
 - **Package Usage** — distinct `(app, package)` pairs in scope, version-independent.
 - **Event Coverage** — distinct declared events confirmed `BOTH` ÷ distinct declared events (`BOTH`+`PACKAGE_ONLY`). Best-case across contexts: an event counts as confirmed if it's `BOTH` *anywhere* in scope.
@@ -150,19 +159,25 @@ directly from `EVENT_MATCH_STATUS` and field coverage resolved for *that
 specific context*. The row's package line lists every contributing package.
 Sort: Used → Package-only → Game-only, then alphabetical. Tabs
 (All/Used/Package-only/Game-only) plus Event and Field dropdown filters
-(options scoped to whatever the main filters leave visible) plus Decorated
-Field narrow the list further.
+(options scoped to whatever the main filters leave visible) narrow the list
+further. Columns: Event Name, Last Seen, First/Last Seen Ver, Field
+Coverage, **Game-Only Field** (distinct fields the game fires that no
+package declares for that event; purple when > 0), Type Issues.
 
 ## Page 2 — event deepdive
 
 Click any event row. Breadcrumb + scope pill name the exact context you
-drilled in from. `FIELD USAGE` / `TYPE MISMATCHES` stat cards are recomputed
-for that context specifically. **Fields** table lists every field observed
+drilled in from. `FIELD USAGE` / `TYPE MISMATCHES` / `GAME-ONLY FIELD` stat
+cards are recomputed for that context specifically. **Fields** table lists every field observed
 for this event in this context — fields the package(s) declare *and* any
 extra undeclared fields the game fires — with per-field status resolved
 against the active scope from `MATCH_STATUS`, so a field can show
 `Package-only` or `Game-only` here even though the event overall is `Used`.
-`Issues only` filters to anything not `Used`. **Contexts in scope** lists
+`Issues only` filters to anything not `Used`. A **Decorated Field** checkbox
+(checked by default) sits beside it: unchecking drops decorated fields from
+the table, the stat cards and the contexts table. The last column,
+`DECORATED FIELD`, reads `yes`/`no` per field (`DECORATED_BY` populated or
+not; game-only fields are always `no`). **Contexts in scope** lists
 every other `(app, app_version)` carrying this same event, restricted to
 the current main-filter scope (not global) — its Package Version column
 lists every package version contributing to that context; click a row to

@@ -103,7 +103,9 @@ function typesCompatible(pkgType, gameType) {
 
 const state = {
   selectedApps: null, selectedAppVersions: null, selectedPackages: null, selectedPackageVersions: null,
-  rcVersion: false, decoratedField: false, bucket: 'all',
+  // RC versions are included by default (checkbox starts checked, never shown as a chip).
+  // Layer 1 always includes decorated fields; deepDecorated is only the Layer-2 Fields toggle.
+  rcVersion: true, deepDecorated: true, bucket: 'all',
   selectedEvents: null, selectedFields: null,
   expandedGroups: new Set(),
   page2: null,   // {event, app, ver} -- active scope
@@ -365,16 +367,16 @@ function initUI() {
   document.getElementById('resetBtn').addEventListener('click', () => {
     state.selectedApps = null; state.selectedAppVersions = null;
     state.selectedPackages = null; state.selectedPackageVersions = null;
-    state.rcVersion = false; state.decoratedField = false; state.bucket = 'all';
+    state.rcVersion = true; state.deepDecorated = true; state.bucket = 'all';
     state.selectedEvents = null; state.selectedFields = null; state.expandedGroups.clear();
-    document.getElementById('rcVersionChk').checked = false;
-    document.getElementById('decoratedChk').checked = false;
+    document.getElementById('rcVersionChk').checked = true;
+    document.getElementById('deepDecoratedChk').checked = true;
     document.querySelectorAll('.bucket-tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.bucket === 'all'));
     refreshAllDropdowns(); render();
   });
 
   document.getElementById('rcVersionChk').addEventListener('change', e => { state.rcVersion = e.target.checked; onScopeFilterChange(); });
-  document.getElementById('decoratedChk').addEventListener('change', e => { state.decoratedField = e.target.checked; onScopeFilterChange(); });
+  document.getElementById('deepDecoratedChk').addEventListener('change', e => { state.deepDecorated = e.target.checked; renderPage2(); });
 
   document.querySelectorAll('.bucket-tabs .tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -452,13 +454,11 @@ function fieldsInScope() {
   return [...set].sort((x, y) => S[x].localeCompare(S[y]));
 }
 
-// facts passing App/App-version/Package/Package-version/RC-version/Decorated-field.
-// RC Version and Decorated Field are both OFF by default, and default-off means
-// EXCLUDE that data from every calculation (scorecards, usage table, events
-// table, and the deepdive they feed into) -- not just "don't filter to it".
-// Checking either box adds that data back in. Neither ever hides a game-only
-// row: game-only facts always carry PRERELEASE=0 and DECORATED_BY=null (see
-// build_dataset.py), so they pass through regardless of these two checkboxes.
+// facts passing App/App-version/Package/Package-version/RC-version.
+// RC Version is ON by default; unchecking it excludes prerelease (is_prerelease)
+// rows from every Layer-1 calculation and the deepdive. Decorated fields are
+// always included here -- Layer 2 has its own local Decorated Field toggle.
+// Game-only rows always carry PRERELEASE=0, so RC never hides them.
 //
 // Package / Package Version filters and game-only fields: a game-only field
 // (MATCH_STATUS=GAME_ONLY) has no package of its own, so a naive package
@@ -499,7 +499,6 @@ function passesMainFilters(f) {
     if (pkgVerSet !== null && (f[C.PKG_VER] === null || !pkgVerSet.has(f[C.PKG_VER]))) return false;
   }
   if (!state.rcVersion && f[C.PRERELEASE] === 1) return false;
-  if (!state.decoratedField && f[C.DECORATED_BY] !== null) return false;
   return true;
 }
 function mainFilteredFacts() { return DATA.facts.filter(passesMainFilters); }
@@ -562,11 +561,7 @@ function renderFilterChips() {
     selectionChips('selectedPackages', 'Package', packagesInScope),
     selectionChips('selectedPackageVersions', 'Pkg ver', packageVersionsInScope),
   ];
-  // RC Version and Decorated Field both exclude data by default now (see
-  // passesMainFilters) and affect scorecards/usage table/events table alike,
-  // so both chips live in the main "in scope" row, not the events-only one.
-  if (state.rcVersion) groups.push([{ kind: '', label: 'RC version', onRemove: () => { state.rcVersion = false; document.getElementById('rcVersionChk').checked = false; } }]);
-  if (state.decoratedField) groups.push([{ kind: '', label: 'Decorated field', onRemove: () => { state.decoratedField = false; document.getElementById('decoratedChk').checked = false; } }]);
+  // RC Version is on by default and deliberately never shown as a chip.
   renderChipsInto('filterChips', groups);
 }
 
@@ -750,7 +745,7 @@ function renderEvents(facts) {
       // are extras with no spec to compare against and don't count toward
       // it -- unless the event itself has no package spec at all, in which
       // case every observed field counts as covered by convention (N/N).
-      let total, used, extra = 0;   // extra = undeclared (game-only) fields on an event that has a package spec
+      let total, used;
       if (status === ST.GAME_ONLY) {
         const all = new Set(eo.fields.map(f => f[C.FIELD]));
         total = all.size; used = all.size;
@@ -758,8 +753,10 @@ function renderEvents(facts) {
         const declared = new Set(eo.fields.filter(f => f[C.STATUS] !== ST.GAME_ONLY).map(f => f[C.FIELD]));
         const matched = new Set(eo.fields.filter(f => f[C.STATUS] === ST.BOTH).map(f => f[C.FIELD]));
         total = declared.size; used = matched.size;
-        extra = new Set(eo.fields.filter(f => f[C.STATUS] === ST.GAME_ONLY).map(f => f[C.FIELD])).size;
       }
+      // fields the game fires that no package declares for this event
+      const declaredNames = new Set(eo.fields.filter(f => f[C.STATUS] !== ST.GAME_ONLY).map(f => f[C.FIELD]));
+      const gameOnlyFields = new Set(eo.fields.filter(f => f[C.STATUS] === ST.GAME_ONLY && !declaredNames.has(f[C.FIELD])).map(f => f[C.FIELD])).size;
       let typeIssues = 0;
       eo.fields.forEach(f => {
         if (f[C.STATUS] === ST.BOTH && f[C.TYPE_GAME] !== null && !typesCompatible(str(f[C.TYPE_PKG]), str(f[C.TYPE_GAME]))) typeIssues++;
@@ -770,7 +767,7 @@ function renderEvents(facts) {
       const pkgs = [...new Set(eo.fields.map(f => f[C.PKG]).filter(p => p !== null))].sort((a, b) => S[a].localeCompare(S[b]));
       evRows.push({
         pkgs, event: eo.event, status, bucket,
-        used, total, extra, typeIssues, lastSeen, firstSeenVer, lastSeenVer,
+        used, total, gameOnlyFields, typeIssues, lastSeen, firstSeenVer, lastSeenVer,
       });
     }
     if (evRows.length === 0) continue;
@@ -804,7 +801,7 @@ function renderEvents(facts) {
     const gk = g.app + ':' + g.ver;
     const open = state.expandedGroups.has(gk);
     html += `<tr class="group-header-row" data-gk="${gk}">
-      <td colspan="7">
+      <td colspan="8">
         <div class="group-header">
           <span class="group-caret">${open ? '▾' : '▸'}</span>
           <span class="group-app">${S[g.app]}</span>
@@ -815,10 +812,10 @@ function renderEvents(facts) {
     </tr>`;
     if (open) {
       const maxH = g.events.length > 10 ? 'max-height:604px;' : '';
-      html += `<tr class="group-scroll-row"><td colspan="7"><div class="group-scroll" style="${maxH}"><table><colgroup>
-        <col style="width:400px"><col style="width:120px"><col style="width:135px"><col style="width:135px"><col style="width:175px"><col style="width:115px"><col style="width:30px">
+      html += `<tr class="group-scroll-row"><td colspan="8"><div class="group-scroll" style="${maxH}"><table><colgroup>
+        <col style="width:400px"><col style="width:120px"><col style="width:135px"><col style="width:135px"><col style="width:175px"><col style="width:130px"><col style="width:115px"><col style="width:30px">
         </colgroup>
-        <thead><tr><th>EVENT NAME</th><th>LAST SEEN</th><th>FIRST SEEN VER</th><th>LAST SEEN VER</th><th>FIELD COVERAGE</th><th style="text-align:right;">TYPE ISSUES</th><th></th></tr></thead>
+        <thead><tr><th>EVENT NAME</th><th>LAST SEEN</th><th>FIRST SEEN VER</th><th>LAST SEEN VER</th><th>FIELD COVERAGE</th><th style="text-align:right;">GAME-ONLY FIELD</th><th style="text-align:right;">TYPE ISSUES</th><th></th></tr></thead>
         <tbody>`;
       g.events.forEach(e => {
         const pct = e.total ? Math.round(100 * e.used / e.total) : 0;
@@ -836,7 +833,8 @@ function renderEvents(facts) {
           <td class="last-seen-cell">${e.lastSeen !== null ? S[e.lastSeen] : '&mdash;'}</td>
           <td class="ver-cell">${e.firstSeenVer !== null ? S[e.firstSeenVer] : '&mdash;'}</td>
           <td class="ver-cell">${e.lastSeenVer !== null ? S[e.lastSeenVer] : '&mdash;'}</td>
-          <td class="field-cov-cell"><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${pctColor(pct)};"></div></div><span class="bar-label">${e.used} / ${e.total}${e.extra ? ` <span class="extra-fields" title="${e.extra} field${e.extra === 1 ? '' : 's'} fired by the game but not declared by any package (game-only)">+${e.extra}</span>` : ''}</span></div></td>
+          <td class="field-cov-cell"><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${pctColor(pct)};"></div></div><span class="bar-label">${e.used} / ${e.total}</span></div></td>
+          <td class="go-field-cell ${e.gameOnlyFields ? '' : 'zero'}">${e.gameOnlyFields ? e.gameOnlyFields : '&mdash;'}</td>
           <td class="type-issues-cell ${e.typeIssues ? '' : 'zero'}">${e.typeIssues ? e.typeIssues : '&mdash;'}</td>
           <td class="chevron-cell">&rsaquo;</td>
         </tr>`;
@@ -868,8 +866,11 @@ function renderEvents(facts) {
 function renderPage2() {
   const { event, app, ver } = state.page2;
 
-  // all facts for this event, within current main-filter scope (for Contexts in scope)
-  const scopeFacts = DATA.facts.filter(f => f[C.EVENT] === event && passesMainFilters(f));
+  // all facts for this event, within current main-filter scope (for Contexts in scope).
+  // The Decorated Field toggle is local to this page: unchecked drops decorated
+  // fields from the Fields table, its stats and the contexts table alike.
+  const scopeFacts = DATA.facts.filter(f => f[C.EVENT] === event && passesMainFilters(f)
+    && (state.deepDecorated || f[C.DECORATED_BY] === null));
   // facts for the exact clicked context
   const ctxFacts = scopeFacts.filter(f => f[C.APP] === app && f[C.APP_VER] === ver);
 
@@ -918,8 +919,9 @@ function renderPage2() {
   const fields = new Map();
   ctxFacts.forEach(f => {
     const fi = f[C.FIELD];
-    if (!fields.has(fi)) fields.set(fi, { typePkg: null, typeGame: null, status: null, firstSeen: null, lastSeen: null });
+    if (!fields.has(fi)) fields.set(fi, { typePkg: null, typeGame: null, status: null, firstSeen: null, lastSeen: null, decorated: false });
     const fo = fields.get(fi);
+    if (f[C.DECORATED_BY] !== null) fo.decorated = true;
     if (f[C.STATUS] === ST.BOTH) {
       fo.typePkg = f[C.TYPE_PKG];
       fo.typeGame = f[C.TYPE_GAME];
@@ -936,13 +938,17 @@ function renderPage2() {
     }
   });
 
+  const gameOnlyCount = [...fields.values()].filter(fo => fo.status === 'game-only').length;
+  document.getElementById('deepGameOnly').textContent = gameOnlyCount;
+  document.getElementById('deepGameOnly').style.color = gameOnlyCount > 0 ? TOK.gameOnly : TOK.ok;
+
   const issuesOnly = document.getElementById('issuesOnlyChk').checked;
   let fieldRows = [...fields.entries()].sort((a, b) => S[a[0]].localeCompare(S[b[0]]));
   if (issuesOnly) fieldRows = fieldRows.filter(([, fo]) => fo.status !== 'used');
 
   const fbody = document.getElementById('fieldsBody');
   if (fieldRows.length === 0) {
-    fbody.innerHTML = `<tr><td colspan="6" class="empty-state fields-empty">No fields with issues on this event.</td></tr>`;
+    fbody.innerHTML = `<tr><td colspan="7" class="empty-state fields-empty">No fields with issues on this event.</td></tr>`;
   } else {
     fbody.innerHTML = fieldRows.map(([fi, fo]) => {
       const statusLabel = fo.status === 'mismatch' ? 'Type mismatched' : fo.status === 'used' ? 'Used' : fo.status === 'package-only' ? 'Package-only' : 'Game-only';
@@ -957,6 +963,7 @@ function renderPage2() {
         <td><span class="badge ${statusCls}">${statusLabel}</span></td>
         <td style="color:var(--dim);">${fo.firstSeen !== null ? S[fo.firstSeen] : '&mdash;'}</td>
         <td style="color:var(--mid);">${fo.lastSeen !== null ? S[fo.lastSeen] : '&mdash;'}</td>
+        <td style="color:${fo.decorated ? 'var(--mid)' : 'var(--dim3)'};">${fo.decorated ? 'yes' : 'no'}</td>
       </tr>`;
     }).join('');
   }
