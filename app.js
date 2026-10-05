@@ -152,9 +152,28 @@ function remapStateToNewData(newData) {
   }
 }
 
+// The source table can contain observed events with no field name (or, in
+// principle, no event/app/version name). Everything downstream assumes those
+// four columns are always real strings -- one null made `S[null].localeCompare`
+// throw and blanked the whole page -- so give missing names a visible
+// placeholder at load time instead of letting them reach the sorts.
+function sanitizeData(d) {
+  const placeholders = [[C.APP, '(unknown app)'], [C.APP_VER, '(unknown version)'], [C.EVENT, '(unknown event)'], [C.FIELD, '(no field name)']];
+  const idx = new Map();
+  for (const [col, label] of placeholders) {
+    for (const f of d.facts) {
+      if (f[col] !== null) continue;
+      if (!idx.has(label)) { idx.set(label, d.strings.length); d.strings.push(label); }
+      f[col] = idx.get(label);
+    }
+  }
+  return d;
+}
+
 function loadData(isRefresh) {
   return fetch(DATA_URL, { cache: 'no-store' })
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(sanitizeData)
     .then(d => {
       if (isRefresh) remapStateToNewData(d);
       DATA = d; S = d.strings;
