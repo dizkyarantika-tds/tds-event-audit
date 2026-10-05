@@ -459,13 +459,45 @@ function fieldsInScope() {
 // Checking either box adds that data back in. Neither ever hides a game-only
 // row: game-only facts always carry PRERELEASE=0 and DECORATED_BY=null (see
 // build_dataset.py), so they pass through regardless of these two checkboxes.
+//
+// Package / Package Version filters and game-only fields: a game-only field
+// (MATCH_STATUS=GAME_ONLY) has no package of its own, so a naive package
+// check would drop every undeclared field the moment any Package filter is
+// set -- e.g. Game_End's extra fields vanished once a package was picked,
+// even though the event itself is that package's. Instead an extra field
+// follows its event: it passes if the same (app, version, event) has a
+// declared row from a selected package/version. Events with no package
+// context at all (EVENT_MATCH_STATUS=GAME_ONLY) still can't match one.
+const CTX_KEY = (a, v, e) => (a * 65536 + v) * 65536 + e;
+let declaredCtxCache = { data: null, rc: null, map: null };
+function declaredContexts() {
+  if (declaredCtxCache.data === DATA && declaredCtxCache.rc === state.rcVersion) return declaredCtxCache.map;
+  const map = new Map(); // CTX_KEY -> [[pkg, pkgVer], ...] for declared rows that survive the RC filter
+  for (const f of DATA.facts) {
+    if (f[C.PKG] === null) continue;
+    if (!state.rcVersion && f[C.PRERELEASE] === 1) continue;
+    const k = CTX_KEY(f[C.APP], f[C.APP_VER], f[C.EVENT]);
+    let arr = map.get(k);
+    if (!arr) map.set(k, arr = []);
+    arr.push([f[C.PKG], f[C.PKG_VER]]);
+  }
+  declaredCtxCache = { data: DATA, rc: state.rcVersion, map };
+  return map;
+}
+
 function passesMainFilters(f) {
   const appSet = state.selectedApps, verSet = state.selectedAppVersions;
   const pkgSet = state.selectedPackages, pkgVerSet = state.selectedPackageVersions;
   if (appSet !== null && !appSet.has(f[C.APP])) return false;
   if (verSet !== null && !verSet.has(f[C.APP_VER])) return false;
-  if (pkgSet !== null) { if (f[C.PKG] === null || !pkgSet.has(f[C.PKG])) return false; }
-  if (pkgVerSet !== null) { if (f[C.PKG_VER] === null || !pkgVerSet.has(f[C.PKG_VER])) return false; }
+  if (f[C.PKG] === null && (pkgSet !== null || pkgVerSet !== null)) {
+    if (f[C.EVENT_STATUS] === ST.GAME_ONLY) return false;
+    const owners = declaredContexts().get(CTX_KEY(f[C.APP], f[C.APP_VER], f[C.EVENT]));
+    if (!owners || !owners.some(([p, pv]) => (pkgSet === null || pkgSet.has(p)) && (pkgVerSet === null || pkgVerSet.has(pv)))) return false;
+  } else {
+    if (pkgSet !== null && !pkgSet.has(f[C.PKG])) return false;
+    if (pkgVerSet !== null && (f[C.PKG_VER] === null || !pkgVerSet.has(f[C.PKG_VER]))) return false;
+  }
   if (!state.rcVersion && f[C.PRERELEASE] === 1) return false;
   if (!state.decoratedField && f[C.DECORATED_BY] !== null) return false;
   return true;
@@ -718,7 +750,7 @@ function renderEvents(facts) {
       // are extras with no spec to compare against and don't count toward
       // it -- unless the event itself has no package spec at all, in which
       // case every observed field counts as covered by convention (N/N).
-      let total, used;
+      let total, used, extra = 0;   // extra = undeclared (game-only) fields on an event that has a package spec
       if (status === ST.GAME_ONLY) {
         const all = new Set(eo.fields.map(f => f[C.FIELD]));
         total = all.size; used = all.size;
@@ -726,6 +758,7 @@ function renderEvents(facts) {
         const declared = new Set(eo.fields.filter(f => f[C.STATUS] !== ST.GAME_ONLY).map(f => f[C.FIELD]));
         const matched = new Set(eo.fields.filter(f => f[C.STATUS] === ST.BOTH).map(f => f[C.FIELD]));
         total = declared.size; used = matched.size;
+        extra = new Set(eo.fields.filter(f => f[C.STATUS] === ST.GAME_ONLY).map(f => f[C.FIELD])).size;
       }
       let typeIssues = 0;
       eo.fields.forEach(f => {
@@ -737,7 +770,7 @@ function renderEvents(facts) {
       const pkgs = [...new Set(eo.fields.map(f => f[C.PKG]).filter(p => p !== null))].sort((a, b) => S[a].localeCompare(S[b]));
       evRows.push({
         pkgs, event: eo.event, status, bucket,
-        used, total, typeIssues, lastSeen, firstSeenVer, lastSeenVer,
+        used, total, extra, typeIssues, lastSeen, firstSeenVer, lastSeenVer,
       });
     }
     if (evRows.length === 0) continue;
@@ -803,7 +836,7 @@ function renderEvents(facts) {
           <td class="last-seen-cell">${e.lastSeen !== null ? S[e.lastSeen] : '&mdash;'}</td>
           <td class="ver-cell">${e.firstSeenVer !== null ? S[e.firstSeenVer] : '&mdash;'}</td>
           <td class="ver-cell">${e.lastSeenVer !== null ? S[e.lastSeenVer] : '&mdash;'}</td>
-          <td class="field-cov-cell"><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${pctColor(pct)};"></div></div><span class="bar-label">${e.used} / ${e.total}</span></div></td>
+          <td class="field-cov-cell"><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${pctColor(pct)};"></div></div><span class="bar-label">${e.used} / ${e.total}${e.extra ? ` <span class="extra-fields" title="${e.extra} field${e.extra === 1 ? '' : 's'} fired by the game but not declared by any package (game-only)">+${e.extra}</span>` : ''}</span></div></td>
           <td class="type-issues-cell ${e.typeIssues ? '' : 'zero'}">${e.typeIssues ? e.typeIssues : '&mdash;'}</td>
           <td class="chevron-cell">&rsaquo;</td>
         </tr>`;

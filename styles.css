@@ -342,3 +342,9 @@ main { padding: 18px 20px 48px; display: flex; flex-direction: column; gap: 18px
 
 .empty-state { padding: 44px 20px; text-align: center; color: var(--dim3); font-size: 12.5px; }
 .empty-state.fields-empty { padding: 36px 20px; }
+
+/* "+N" game-only field count beside an event's field coverage (Events table) */
+.extra-fields {
+  margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 500;
+  background: rgba(155,109,255,0.15); color: var(--game-only); cursor: help;
+}
