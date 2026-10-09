@@ -108,7 +108,16 @@ const state = {
   rcVersion: true, deepDecorated: true, bucket: 'all',
   selectedEvents: null, selectedFields: null,
   expandedGroups: new Set(),
+  toggledGroups: new Set(),   // groups the user opened/closed by hand -- never auto-expanded again
   page2: null,   // {event, app, ver} -- active scope
+  // Compare specs (layer 3). Sides hold string indices; A is the "old" side,
+  // B the "new" one (Added = only in B, Removed = only in A).
+  view: null,    // 'compare' | null
+  cmp: { A: { kind: 'app', name: null, ver: null }, B: { kind: 'app', name: null, ver: null } },
+  cmpFrom: null, // 'page2' when opened from the deepdive (back returns there)
+  cmpBucket: 'all', cmpDecorated: true,
+  cmpEvents: null, cmpFields: null,
+  cmpOpen: new Set(),   // expanded event indices
 };
 
 // ---------------------------------------------------------------------------
@@ -147,11 +156,29 @@ function remapStateToNewData(newData) {
     if (na !== undefined && nv !== undefined) newExpanded.add(na + ':' + nv);
   });
   state.expandedGroups = newExpanded;
+  const newToggled = new Set();
+  state.toggledGroups.forEach(key => {
+    const [a, v] = key.split(':').map(Number);
+    const na = newIdx.get(S[a]), nv = newIdx.get(S[v]);
+    if (na !== undefined && nv !== undefined) newToggled.add(na + ':' + nv);
+  });
+  state.toggledGroups = newToggled;
 
   if (state.page2) {
     const ne = newIdx.get(S[state.page2.event]), na = newIdx.get(S[state.page2.app]), nv = newIdx.get(S[state.page2.ver]);
     state.page2 = (ne !== undefined && na !== undefined && nv !== undefined) ? { event: ne, app: na, ver: nv } : null;
   }
+
+  const one = i => { if (i === null) return null; const ni = newIdx.get(S[i]); return ni === undefined ? null : ni; };
+  ['A', 'B'].forEach(k => {
+    const sd = state.cmp[k];
+    sd.name = one(sd.name); sd.ver = sd.name === null ? null : one(sd.ver);
+  });
+  state.cmpEvents = remapSet(state.cmpEvents);
+  state.cmpFields = remapSet(state.cmpFields);
+  const newOpen = new Set();
+  state.cmpOpen.forEach(i => { const ni = one(i); if (ni !== null) newOpen.add(ni); });
+  state.cmpOpen = newOpen;
 }
 
 // The source table can contain observed events with no field name (or, in
@@ -185,6 +212,7 @@ function loadData(isRefresh) {
       const cached = DATA.generatedAt ? `last cached ${DATA.generatedAt} UTC` : 'ready';
       document.getElementById('cacheStatus').textContent = cached;
       document.getElementById('cacheStatus2').textContent = cached;
+      document.getElementById('cacheStatus3').textContent = cached;
       if (isRefresh) { refreshAllDropdowns(); render(); } else { initUI(); render(); }
     });
 }
@@ -368,26 +396,28 @@ function initUI() {
     state.selectedApps = null; state.selectedAppVersions = null;
     state.selectedPackages = null; state.selectedPackageVersions = null;
     state.rcVersion = true; state.deepDecorated = true; state.bucket = 'all';
-    state.selectedEvents = null; state.selectedFields = null; state.expandedGroups.clear();
+    state.selectedEvents = null; state.selectedFields = null; state.expandedGroups.clear(); state.toggledGroups.clear();
     document.getElementById('rcVersionChk').checked = true;
     document.getElementById('deepDecoratedChk').checked = true;
-    document.querySelectorAll('.bucket-tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.bucket === 'all'));
+    document.querySelectorAll('#bucketTabs .tab').forEach(t => t.classList.toggle('active', t.dataset.bucket === 'all'));
     refreshAllDropdowns(); render();
   });
 
   document.getElementById('rcVersionChk').addEventListener('change', e => { state.rcVersion = e.target.checked; onScopeFilterChange(); });
   document.getElementById('deepDecoratedChk').addEventListener('change', e => { state.deepDecorated = e.target.checked; renderPage2(); });
 
-  document.querySelectorAll('.bucket-tabs .tab').forEach(tab => {
+  document.querySelectorAll('#bucketTabs .tab').forEach(tab => {
     tab.addEventListener('click', () => {
       state.bucket = tab.dataset.bucket;
-      document.querySelectorAll('.bucket-tabs .tab').forEach(t => t.classList.toggle('active', t === tab));
+      document.querySelectorAll('#bucketTabs .tab').forEach(t => t.classList.toggle('active', t === tab));
       render();
     });
   });
 
   document.getElementById('backBtn').addEventListener('click', () => { state.page2 = null; render(); });
   document.getElementById('issuesOnlyChk').addEventListener('change', () => renderPage2());
+
+  initCompareUI();
 
   refreshAllDropdowns();
 }
@@ -509,7 +539,12 @@ function mainFilteredFacts() { return DATA.facts.filter(passesMainFilters); }
 
 function render() {
   if (!DATA) return;
-  if (state.page2) {
+  document.getElementById('layer3').hidden = state.view !== 'compare';
+  if (state.view === 'compare') {
+    document.getElementById('layer1').hidden = true;
+    document.getElementById('layer2').hidden = true;
+    renderCompare();
+  } else if (state.page2) {
     document.getElementById('layer1').hidden = true;
     document.getElementById('layer2').hidden = false;
     renderPage2();
@@ -571,7 +606,7 @@ function renderEventChips() {
   const groups = [selectionChips('selectedEvents', 'Event', eventsInScope)];
   if (state.bucket !== 'all') groups.push([{ kind: 'Status', label: BUCKET_LABEL[state.bucket], onRemove: () => {
     state.bucket = 'all';
-    document.querySelectorAll('.bucket-tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.bucket === 'all'));
+    document.querySelectorAll('#bucketTabs .tab').forEach(t => t.classList.toggle('active', t.dataset.bucket === 'all'));
   } }]);
   renderChipsInto('eventChips', groups);
 }
@@ -788,7 +823,10 @@ function renderEvents(facts) {
   });
 
   // auto-expand the sole group when filters narrow to exactly one app-version
-  if (groupList.length === 1) state.expandedGroups.add(groupList[0].app + ':' + groupList[0].ver);
+  if (groupList.length === 1) {
+    const only = groupList[0].app + ':' + groupList[0].ver;
+    if (!state.toggledGroups.has(only)) state.expandedGroups.add(only);
+  }
 
   const tbody = document.getElementById('eventsBody');
   if (groupList.length === 0) {
@@ -811,11 +849,16 @@ function renderEvents(facts) {
       </td>
     </tr>`;
     if (open) {
-      const maxH = g.events.length > 10 ? 'max-height:604px;' : '';
-      html += `<tr class="group-scroll-row"><td colspan="8"><div class="group-scroll" style="${maxH}"><table><colgroup>
+      // >10 rows: the group scrolls on its own (10 visible) and its header sticks to
+      // that box; otherwise it flows in the panel's scroller and the column header
+      // sticks just below the 42px sticky group header.
+      const own = g.events.length > 10;
+      const wrapStyle = own ? 'max-height:604px;overflow-y:auto;' : 'overflow:visible;';
+      const thTop = `top:${own ? 0 : 42}px;`;
+      html += `<tr class="group-scroll-row"><td colspan="8"><div class="group-scroll" style="${wrapStyle}"><table><colgroup>
         <col style="width:400px"><col style="width:120px"><col style="width:135px"><col style="width:135px"><col style="width:175px"><col style="width:130px"><col style="width:115px"><col style="width:30px">
         </colgroup>
-        <thead><tr><th>EVENT NAME</th><th>LAST SEEN</th><th>FIRST SEEN VER</th><th>LAST SEEN VER</th><th>FIELD COVERAGE</th><th style="text-align:right;">GAME-ONLY FIELD</th><th style="text-align:right;">TYPE ISSUES</th><th></th></tr></thead>
+        <thead><tr><th style="${thTop}">EVENT NAME</th><th style="${thTop}">LAST SEEN</th><th style="${thTop}">FIRST SEEN VER</th><th style="${thTop}">LAST SEEN VER</th><th style="${thTop}">FIELD COVERAGE</th><th style="${thTop}text-align:right;">GAME-ONLY FIELD</th><th style="${thTop}text-align:right;">TYPE ISSUES</th><th style="${thTop}"></th></tr></thead>
         <tbody>`;
       g.events.forEach(e => {
         const pct = e.total ? Math.round(100 * e.used / e.total) : 0;
@@ -847,6 +890,7 @@ function renderEvents(facts) {
   tbody.querySelectorAll('.group-header-row').forEach(row => {
     row.addEventListener('click', () => {
       const gk = row.dataset.gk;
+      state.toggledGroups.add(gk);
       if (state.expandedGroups.has(gk)) state.expandedGroups.delete(gk); else state.expandedGroups.add(gk);
       render();
     });
@@ -1020,4 +1064,382 @@ function renderPage2() {
       render();
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Compare specs (layer 3) -- any two specs side by side, independent of the
+// Layer-1 filters. A side is either an App (name + app version: what the game
+// actually fires, observed types from TYPE_GAME, i.e. MATCH_STATUS BOTH or
+// GAME_ONLY) or a Package (name + package version: what the package
+// declares). Package specs come from DATA.pkgSpec (ANALYTICS_EVENT_SPEC --
+// every published version, shipped or not); older datasets without it fall
+// back to the declared rows in the reconciliation facts, keyed by
+// PACKAGE_VERSION_BASE (the same version string ANALYTICS_EVENT_SPEC uses).
+//
+// A is the old side, B the new one: a field only in B is Added, only in A is
+// Removed, in both with a different type is Type-changed. App vs Package
+// types are different vocabularies, so a mixed comparison uses the same
+// typesCompatible() rule as the deepdive instead of string equality.
+// ---------------------------------------------------------------------------
+
+const PKG_SPEC = { PKG: 0, VER: 1, EVENT: 2, FIELD: 3, TYPE: 4, DECO: 5 };
+const CMP_BADGE = {
+  added: ['Added', 'cmp-added'], removed: ['Removed', 'cmp-removed'],
+  changed: ['Type-changed', 'cmp-changed'], same: ['Unchanged', 'cmp-same'],
+};
+const CMP_COLOR = { added: '#56c46a', removed: TOK.bad, changed: '#dbab3c', same: '#8a93a3' };
+const TOK_DIM = '#8a93a3';
+
+let cmpCache = { data: null, specs: new Map(), pkgNames: null, pkgVersions: null };
+function cmpCacheFor() {
+  if (cmpCache.data !== DATA) cmpCache = { data: DATA, specs: new Map(), pkgNames: null, pkgVersions: null };
+  return cmpCache;
+}
+function hasPkgSpec() { return Array.isArray(DATA.pkgSpec) && DATA.pkgSpec.length > 0; }
+
+// package -> Set(version) for whichever package source is in use
+function packageVersionIndex() {
+  const cache = cmpCacheFor();
+  if (cache.pkgVersions) return cache.pkgVersions;
+  const map = new Map();
+  const add = (p, v) => { if (p === null || v === null) return; let set = map.get(p); if (!set) map.set(p, set = new Set()); set.add(v); };
+  if (hasPkgSpec()) DATA.pkgSpec.forEach(r => add(r[PKG_SPEC.PKG], r[PKG_SPEC.VER]));
+  else DATA.facts.forEach(f => { if (f[C.PKG] !== null) add(f[C.PKG], f[C.PKG_VER_BASE]); });
+  cache.pkgVersions = map;
+  return map;
+}
+
+function cmpSideNames(kind) {
+  if (kind === 'app') return [...DATA.apps].sort((x, y) => S[x].localeCompare(S[y]));
+  return [...packageVersionIndex().keys()].sort((x, y) => S[x].localeCompare(S[y]));
+}
+function cmpSideVersions(kind, name) {
+  if (name === null) return [];
+  const vers = kind === 'app' ? (DATA.appVersions[name] || []) : [...(packageVersionIndex().get(name) || [])];
+  return [...vers].sort((x, y) => naturalVerSort(S[x], S[y])).reverse(); // newest first
+}
+
+// Spec for one side: Map(event -> Map(field -> {types: Set<string>, deco})).
+function cmpSideSpec(sd) {
+  if (sd.name === null || sd.ver === null) return null;
+  const cache = cmpCacheFor(), key = `${sd.kind}|${sd.name}|${sd.ver}`;
+  if (cache.specs.has(key)) return cache.specs.get(key);
+  const out = new Map();
+  const put = (e, fd, type, deco) => {
+    let ev = out.get(e);
+    if (!ev) out.set(e, ev = new Map());
+    let f = ev.get(fd);
+    if (!f) ev.set(fd, f = { types: new Set(), deco: false });
+    if (type !== null) f.types.add(S[type]);
+    if (deco) f.deco = true;
+  };
+  if (sd.kind === 'app') {
+    for (const f of DATA.facts) {
+      if (f[C.APP] !== sd.name || f[C.APP_VER] !== sd.ver || f[C.STATUS] === ST.PACKAGE_ONLY) continue;
+      put(f[C.EVENT], f[C.FIELD], f[C.TYPE_GAME], f[C.DECORATED_BY] !== null);
+    }
+  } else if (hasPkgSpec()) {
+    for (const r of DATA.pkgSpec) {
+      if (r[PKG_SPEC.PKG] !== sd.name || r[PKG_SPEC.VER] !== sd.ver) continue;
+      put(r[PKG_SPEC.EVENT], r[PKG_SPEC.FIELD], r[PKG_SPEC.TYPE], r[PKG_SPEC.DECO] !== null);
+    }
+  } else {
+    for (const f of DATA.facts) {
+      if (f[C.PKG] !== sd.name || f[C.PKG_VER_BASE] !== sd.ver || f[C.STATUS] === ST.GAME_ONLY) continue;
+      put(f[C.EVENT], f[C.FIELD], f[C.TYPE_PKG], f[C.DECORATED_BY] !== null);
+    }
+  }
+  cache.specs.set(key, out);
+  return out;
+}
+const typeLabel = fd => fd.types.size ? [...fd.types].sort().join(' / ') : '—';
+
+function sideActive(sd) { return sd.name !== null && sd.ver !== null; }
+
+function openCompare() {
+  const one = sel => (sel !== null && sel.size === 1) ? [...sel][0] : null;
+  const cmp = state.cmp;
+  if (state.page2) {
+    // From the deepdive: A = the package spec behind this event (old),
+    // B = what this app version fires (new). Several packages declaring the
+    // same event -> the alphabetically first one.
+    const { event, app, ver } = state.page2;
+    const owners = new Map(); // pkg -> base version
+    for (const f of DATA.facts) {
+      if (f[C.APP] !== app || f[C.APP_VER] !== ver || f[C.EVENT] !== event || f[C.PKG] === null) continue;
+      const cur = owners.get(f[C.PKG]);
+      if (f[C.PKG_VER_BASE] !== null && (cur === undefined || cur === null || naturalVerSort(S[f[C.PKG_VER_BASE]], S[cur]) > 0)) owners.set(f[C.PKG], f[C.PKG_VER_BASE]);
+      else if (cur === undefined) owners.set(f[C.PKG], null);
+    }
+    const pkg = [...owners.keys()].sort((x, y) => S[x].localeCompare(S[y]))[0];
+    cmp.A = pkg !== undefined ? { kind: 'package', name: pkg, ver: owners.get(pkg) } : { kind: 'package', name: null, ver: null };
+    cmp.B = { kind: 'app', name: app, ver: ver };
+    state.cmpEvents = new Set([event]); state.cmpFields = null;
+    state.cmpOpen = new Set([event]);
+    state.cmpFrom = 'page2';
+  } else {
+    const app = one(state.selectedApps), appVer = one(state.selectedAppVersions);
+    const pkg = one(state.selectedPackages), pkgVer = one(state.selectedPackageVersions);
+    if (app !== null && appVer !== null) {
+      cmp.A = { kind: 'app', name: app, ver: appVer };
+      state.cmpEvents = null; state.cmpFields = null;
+    } else if (pkg !== null && pkgVer !== null) {
+      // the Package Version filter lists shipped versions; specs are keyed by their base
+      const f = DATA.facts.find(r => r[C.PKG] === pkg && r[C.PKG_VER] === pkgVer);
+      cmp.A = { kind: 'package', name: pkg, ver: f ? f[C.PKG_VER_BASE] : null };
+      state.cmpEvents = null; state.cmpFields = null;
+    }
+    state.cmpFrom = null;
+  }
+  document.getElementById('cmpBackLabel').textContent = state.cmpFrom === 'page2' ? 'Back to event' : 'All events';
+  state.view = 'compare';
+  if (openDropdown) openDropdown.close();
+  render();
+  document.getElementById('cmpList').scrollTop = 0;
+  window.scrollTo(0, 0);
+}
+
+function setCmpSide(key, patch) {
+  Object.assign(state.cmp[key], patch);
+  state.cmpEvents = null; state.cmpFields = null;
+  renderCompare();
+  document.getElementById('cmpList').scrollTop = 0;
+}
+
+let cmpEventDD, cmpFieldDD;
+
+function initCompareUI() {
+  document.getElementById('openCompareBtn').addEventListener('click', openCompare);
+  document.getElementById('deepCompareBtn').addEventListener('click', openCompare);
+  document.getElementById('cmpBackBtn').addEventListener('click', () => {
+    if (openDropdown) openDropdown.close();
+    state.view = null; render(); window.scrollTo(0, 0);
+  });
+  document.getElementById('cmpSwapBtn').addEventListener('click', () => {
+    const a = state.cmp.A; state.cmp.A = state.cmp.B; state.cmp.B = a;
+    renderCompare();
+  });
+  document.getElementById('cmpDecoratedChk').addEventListener('change', e => { state.cmpDecorated = e.target.checked; renderCompare(); });
+  document.querySelectorAll('#cmpBuckets .tab').forEach(tab => {
+    tab.addEventListener('click', () => { state.cmpBucket = tab.dataset.bucket; renderCompare(); });
+  });
+  cmpEventDD = setupDropdown({
+    cellId: 'cmpEventDD', ddId: 'cmpEventDD', btnId: 'cmpEventBtn', panelId: 'cmpEventPanel', labelId: 'cmpEventBtnLabel',
+    allItems: () => cmpOptions().events, blankAll: true,
+    getSelected: () => state.cmpEvents, setSelected: v => { state.cmpEvents = v; },
+    onChange: () => renderCompare(),
+  });
+  cmpFieldDD = setupDropdown({
+    cellId: 'cmpFieldDD', ddId: 'cmpFieldDD', btnId: 'cmpFieldBtn', panelId: 'cmpFieldPanel', labelId: 'cmpFieldBtnLabel',
+    allItems: () => cmpOptions().fields, blankAll: true,
+    getSelected: () => state.cmpFields, setSelected: v => { state.cmpFields = v; },
+    onChange: () => renderCompare(),
+  });
+  document.getElementById('cmpList').addEventListener('click', e => {
+    const head = e.target.closest('.cmp-ev-head');
+    if (!head) return;
+    const ev = parseInt(head.dataset.event, 10);
+    if (state.cmpOpen.has(ev)) state.cmpOpen.delete(ev); else state.cmpOpen.add(ev);
+    renderCompare();
+  });
+}
+
+// Event / field options: the union of both active sides, before any filter.
+function cmpOptions() {
+  const events = new Set(), fields = new Set();
+  ['A', 'B'].forEach(k => {
+    const sp = cmpSideSpec(state.cmp[k]);
+    if (!sp) return;
+    sp.forEach((fm, e) => { events.add(e); fm.forEach((_, f) => fields.add(f)); });
+  });
+  const byName = (x, y) => S[x].localeCompare(S[y]);
+  return { events: [...events].sort(byName), fields: [...fields].sort(byName) };
+}
+
+// --- side cards ------------------------------------------------------------
+
+function renderCmpSide(key) {
+  const sd = state.cmp[key], isApp = sd.kind === 'app', active = sideActive(sd);
+  const el = document.getElementById('cmpSide' + key);
+  el.classList.toggle('active', active);
+  const nameSummary = sd.name !== null ? S[sd.name] : 'Select…';
+  const verSummary = sd.ver !== null ? S[sd.ver] : (sd.name === null ? '—' : 'Select…');
+  el.innerHTML = `
+    <div class="cmp-side-top">
+      <span class="cmp-key">${key}</span>
+      <span class="cmp-state"><span class="dot"></span>${active ? 'Active' : 'Not set'}</span>
+      <div class="bucket-tabs">
+        <button type="button" class="tab ${isApp ? 'active' : ''}" data-kind="app">App</button>
+        <button type="button" class="tab ${isApp ? '' : 'active'}" data-kind="package">Package</button>
+      </div>
+    </div>
+    <div class="cmp-side-dds">
+      <div class="cmp-field" data-filter-cell="1" data-field="name">
+        <label>${isApp ? 'App name' : 'Package name'}</label>
+        <button type="button" class="dd-btn ${sd.name === null ? 'unset' : ''}"><span>${esc(nameSummary)}</span><span class="caret">&#9662;</span></button>
+        <div class="dd-panel" hidden></div>
+      </div>
+      <div class="cmp-field" data-filter-cell="1" data-field="ver">
+        <label>${isApp ? 'App version' : 'Package version'}</label>
+        <button type="button" class="dd-btn ${sd.ver === null ? 'unset' : ''}"><span>${esc(verSummary)}</span><span class="caret">&#9662;</span></button>
+        <div class="dd-panel" hidden></div>
+      </div>
+    </div>`;
+  el.querySelectorAll('.cmp-side-top .tab').forEach(tab => tab.addEventListener('click', () => {
+    if (tab.dataset.kind !== sd.kind) setCmpSide(key, { kind: tab.dataset.kind, name: null, ver: null });
+  }));
+  el.querySelectorAll('.cmp-field').forEach(cell => setupSidePicker(key, cell));
+}
+
+// Single-select picker: search box + list; clicking the current value clears it.
+function setupSidePicker(key, cell) {
+  const field = cell.dataset.field, btn = cell.querySelector('.dd-btn'), panel = cell.querySelector('.dd-panel');
+  const control = {
+    cell,
+    close() { panel.hidden = true; if (openDropdown === control) openDropdown = null; },
+  };
+  function open() {
+    if (openDropdown && openDropdown !== control) openDropdown.close();
+    const sd = state.cmp[key];
+    const all = field === 'name' ? cmpSideNames(sd.kind) : cmpSideVersions(sd.kind, sd.name);
+    const cur = field === 'name' ? sd.name : sd.ver;
+    panel.innerHTML = '<input class="dd-search" placeholder="Type to filter…"><div class="dd-scroll"></div>';
+    const search = panel.querySelector('.dd-search'), scroll = panel.querySelector('.dd-scroll');
+    function renderList() {
+      const ft = search.value.trim().toLowerCase();
+      const opts = ft ? all.filter(i => S[i].toLowerCase().includes(ft)) : all;
+      scroll.innerHTML = opts.map(i => `<div class="dd-row single ${i === cur ? 'selected' : ''}" data-i="${i}"><span class="lbl">${esc(S[i])}</span></div>`).join('')
+        + (opts.length ? '' : `<div class="dd-no-match">${all.length ? 'No match' : (field === 'name' ? 'No options' : 'Pick a name first')}</div>`);
+    }
+    scroll.addEventListener('click', e => {
+      const row = e.target.closest('.dd-row');
+      if (!row) return;
+      const i = parseInt(row.dataset.i, 10);
+      control.close();
+      setCmpSide(key, field === 'name' ? { name: i === cur ? null : i, ver: null } : { ver: i === cur ? null : i });
+    });
+    search.addEventListener('input', renderList);
+    renderList();
+    panel.hidden = false;
+    openDropdown = control;
+    search.focus();
+  }
+  btn.addEventListener('click', () => { panel.hidden ? open() : control.close(); });
+}
+
+// --- results ---------------------------------------------------------------
+
+function renderCompare() {
+  renderCmpSide('A'); renderCmpSide('B');
+  const sdA = state.cmp.A, sdB = state.cmp.B;
+  const A = cmpSideSpec(sdA), B = cmpSideSpec(sdB);
+  const diff = !!(A && B), single = !diff && !!(A || B);
+
+  document.getElementById('cmpTitle').textContent = diff ? 'Comparison' : 'Specs';
+  const buckets = document.getElementById('cmpBuckets');
+  buckets.hidden = !diff;
+  buckets.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.bucket === state.cmpBucket));
+  document.getElementById('cmpDecoratedChk').checked = state.cmpDecorated;
+
+  // Drop event/field picks that no longer exist on either side.
+  const opts = cmpOptions();
+  if (state.cmpEvents !== null) { const ok = new Set(opts.events); state.cmpEvents = new Set([...state.cmpEvents].filter(i => ok.has(i))); if (!state.cmpEvents.size) state.cmpEvents = null; }
+  if (state.cmpFields !== null) { const ok = new Set(opts.fields); state.cmpFields = new Set([...state.cmpFields].filter(i => ok.has(i))); if (!state.cmpFields.size) state.cmpFields = null; }
+  cmpEventDD.refreshLabel(); cmpFieldDD.refreshLabel();
+  cmpEventDD.rerenderItems(); cmpFieldDD.rerenderItems();
+
+  const mixed = sdA.kind !== sdB.kind;
+  function typeChanged(fa, fb) {
+    if (!mixed) return typeLabel(fa) !== typeLabel(fb);
+    const [pk, gm] = sdA.kind === 'package' ? [fa, fb] : [fb, fa];
+    for (const p of pk.types) for (const g of gm.types) if (!typesCompatible(p, g)) return true;
+    return false;
+  }
+
+  const fe = state.cmpEvents, ff = state.cmpFields, bucket = state.cmpBucket;
+  const cnt = { added: 0, removed: 0, changed: 0 };
+  const events = [];
+  let nFields = 0;
+  for (const e of opts.events) {
+    if (fe !== null && !fe.has(e)) continue;
+    const ea = A && A.get(e), eb = B && B.get(e);
+    const names = new Set([...(ea ? ea.keys() : []), ...(eb ? eb.keys() : [])]);
+    const rows = [], ec = { added: 0, removed: 0, changed: 0, n: 0 };
+    let any = false;
+    [...names].sort((x, y) => S[x].localeCompare(S[y])).forEach(n => {
+      if (ff !== null && !ff.has(n)) return;
+      const fa = ea && ea.get(n), fb = eb && eb.get(n);
+      const deco = !!((fa && fa.deco) || (fb && fb.deco));
+      if (!state.cmpDecorated && deco) return;
+      let st = null;
+      if (diff) {
+        st = fa && !fb ? 'removed' : !fa && fb ? 'added' : typeChanged(fa, fb) ? 'changed' : 'same';
+        ec.n++;
+        if (st !== 'same') { ec[st]++; any = true; }
+        if (bucket !== 'all' && st !== bucket) return;
+      }
+      rows.push({ n, fa, fb, deco, st });
+    });
+    let est = null;
+    if (diff) {
+      est = ea && !eb ? 'removed' : !ea && eb ? 'added' : any ? 'changed' : 'same';
+      if (est !== 'same') cnt[est]++;
+    }
+    if (!rows.length) continue;
+    nFields += rows.length;
+    events.push({ e, rows, ec, est });
+  }
+
+  const summary = document.getElementById('cmpSummary');
+  summary.hidden = !diff;
+  if (diff) {
+    const item = (v, l, col) => `<span class="cmp-sum-item"><span class="cmp-sum-value" style="color:${v > 0 ? col : TOK_DIM}">${v}</span><span class="cmp-sum-text">${l}</span></span>`;
+    summary.innerHTML = `<div class="cmp-sum-group"><span class="cmp-sum-label">Events</span>${item(cnt.added, 'Added', CMP_COLOR.added)}${item(cnt.removed, 'Removed', CMP_COLOR.removed)}${item(cnt.changed, 'Changed', CMP_COLOR.changed)}</div>`;
+  }
+
+  const singleEl = document.getElementById('cmpSingle');
+  singleEl.hidden = !single;
+  if (single) {
+    const k = A ? 'A' : 'B', sd = state.cmp[k];
+    const s = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+    singleEl.innerHTML = `<span class="cmp-single-label">Side ${k} · ${esc(S[sd.name])} ${esc(S[sd.ver])} (${sd.kind === 'app' ? 'App' : 'Package'})</span>`
+      + `<span>${s(events.length, 'event')} · ${s(nFields, 'field')}</span><span class="cmp-single-hint">Set the other side to compare</span>`;
+  }
+
+  const list = document.getElementById('cmpList'), empty = document.getElementById('cmpEmpty');
+  const hasRows = (diff || single) && events.length > 0;
+  list.hidden = !hasRows;
+  empty.hidden = hasRows;
+  if (!hasRows) {
+    list.innerHTML = '';
+    empty.textContent = (diff || single) ? 'No events or fields match the current filters.' : 'Pick a name and version on Side A or Side B to see specs.';
+    return;
+  }
+
+  const head = diff
+    ? '<colgroup><col><col style="width:190px"><col style="width:190px"><col style="width:140px"><col style="width:130px"></colgroup><thead><tr><th>FIELD NAME</th><th>TYPE IN A</th><th>TYPE IN B</th><th>DECORATED FIELD</th><th>STATUS</th></tr></thead>'
+    : '<colgroup><col><col style="width:220px"><col style="width:160px"></colgroup><thead><tr><th>FIELD NAME</th><th>FIELD TYPE</th><th>DECORATED FIELD</th></tr></thead>';
+  const decoCell = r => `<td style="color:${r.deco ? 'var(--mid)' : 'var(--dim)'}">${r.deco ? 'yes' : 'no'}</td>`;
+  const typeCell = (fd, st) => `<td style="color:${!fd ? 'var(--dim)' : st === 'changed' ? '#dbab3c' : 'var(--mid)'}">${fd ? esc(typeLabel(fd)) : '—'}</td>`;
+
+  list.innerHTML = `<div style="min-width:${diff ? 860 : 640}px">` + events.map(({ e, rows, ec, est }) => {
+    const open = state.cmpOpen.has(e);
+    let line = `<span class="cmp-ev-caret">${open ? '&#9662;' : '&#9656;'}</span><span class="cmp-ev-name">${esc(S[e])}</span>`;
+    if (diff) {
+      const [lbl, cls] = est === 'changed' ? ['Changed', 'cmp-changed'] : CMP_BADGE[est];
+      const diffs = [['+', ec.added, 'added', 'added'], ['−', ec.removed, 'removed', 'removed'], ['~', ec.changed, 'changed', 'changed'], ['', ec.n - ec.added - ec.removed - ec.changed, 'same', 'unchanged']]
+        .filter(d => d[1] > 0).map(d => `<span class="cmp-diff" style="color:${CMP_COLOR[d[2]]}">${d[0]}${d[1]} ${d[3]}</span>`).join('');
+      line += `<span class="badge ${cls}">${lbl}</span><span class="cmp-ev-diffs"><span class="cmp-diffs-label">FIELDS</span>${diffs}</span>`;
+    } else {
+      line += `<span class="cmp-ev-meta">${rows.length} field${rows.length === 1 ? '' : 's'}</span>`;
+    }
+    let html = `<div class="cmp-ev-head" data-event="${e}"><div class="cmp-ev-line">${line}</div></div>`;
+    if (open) {
+      const body = rows.map(r => diff
+        ? `<tr class="${r.st === 'changed' ? 'changed' : ''}"><td class="cmp-fname" title="${esc(S[r.n])}">${esc(S[r.n])}</td>${typeCell(r.fa, r.st)}${typeCell(r.fb, r.st)}${decoCell(r)}<td><span class="badge ${CMP_BADGE[r.st][1]}">${CMP_BADGE[r.st][0]}</span></td></tr>`
+        : `<tr><td class="cmp-fname" title="${esc(S[r.n])}">${esc(S[r.n])}</td><td style="color:var(--mid)">${esc(typeLabel(r.fa || r.fb))}</td>${decoCell(r)}</tr>`).join('');
+      html += `<table class="cmp-table">${head}<tbody>${body}</tbody></table>`;
+    }
+    return html;
+  }).join('') + '</div>';
 }

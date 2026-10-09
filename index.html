@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=8">
+<link rel="stylesheet" href="styles.css?v=9">
 </head>
 <body>
 <div id="app">
@@ -17,7 +17,7 @@
 
     <header class="topbar">
       <h1>Analytics Package Implementation</h1>
-      <div class="cache-status"><span class="dot"></span><span id="cacheStatus">loading&hellip;</span></div>
+      <button type="button" class="cmp-open-btn" id="openCompareBtn"><span class="cmp-glyph">&#8644;</span><span>Compare specs</span></button><span class="topbar-divider"></span><div class="cache-status"><span class="dot"></span><span id="cacheStatus">loading&hellip;</span></div>
     </header>
 
     <div class="filterbar">
@@ -75,7 +75,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel panel-visible">
         <div class="panel-head events-head">
           <div class="events-head-filters">
             <h2>Events</h2>
@@ -130,7 +130,7 @@
       <div class="event-title-row">
         <div>
           <div class="event-title"><h1 id="deepEventName"></h1><span class="badge" id="deepStatusBadge"></span></div>
-          <div class="event-subtitle" id="deepPackageLine"></div>
+          <div class="event-subtitle"><span id="deepPackageLine"></span><button type="button" class="cmp-open-btn small" id="deepCompareBtn"><span class="cmp-glyph">&#8644;</span><span>Compare specs</span></button></div>
         </div>
         <div class="deep-stats">
           <div class="deep-stat"><div class="deep-stat-label">Field usage</div><div class="deep-stat-value" id="deepFieldUsage"></div></div>
@@ -139,7 +139,7 @@
         </div>
       </div>
 
-      <section class="panel">
+      <section class="panel panel-visible">
         <div class="panel-head">
           <h2>Fields</h2>
           <div class="panel-head-checks">
@@ -147,7 +147,7 @@
             <label class="check-inline"><input type="checkbox" id="issuesOnlyChk"> <span>Issues only</span></label>
           </div>
         </div>
-        <div class="table-wrap">
+        <div class="table-wrap scroll-640">
           <table class="dtable pad8">
             <thead>
               <tr><th>Field Name</th><th>Type in Game</th><th>Type in Package</th><th>Status</th><th>First Seen</th><th>Last Seen</th><th>Decorated Field</th></tr>
@@ -162,7 +162,7 @@
           <h2>Contexts in scope</h2>
           <span class="dim" id="ctxCount"></span>
         </div>
-        <div class="table-wrap">
+        <div class="table-wrap scroll-640">
           <table class="dtable pad8">
             <thead>
               <tr><th>APP_NAME</th><th>APP_VERSION</th><th>PACKAGE_VERSION</th><th style="text-align:right;">FIELDS USED</th><th style="text-align:right;">TYPE ISSUES</th></tr>
@@ -176,9 +176,59 @@
 
   </div>
 
+  <!-- ============ LAYER 3 : compare specs ============ -->
+  <div id="layer3" hidden>
+
+    <header class="topbar">
+      <h1>Analytics Package Implementation</h1>
+      <div class="cache-status"><span class="dot"></span><span id="cacheStatus3"></span></div>
+    </header>
+
+    <main>
+
+      <div class="crumb-row">
+        <button class="back-btn" id="cmpBackBtn"><span>&lsaquo;</span><span id="cmpBackLabel">All events</span></button>
+        <h1 class="cmp-page-title">Compare specs</h1>
+      </div>
+
+      <div class="cmp-sides">
+        <div class="cmp-side" id="cmpSideA"></div>
+        <button type="button" class="cmp-swap" id="cmpSwapBtn" title="Swap sides">&#8644;</button>
+        <div class="cmp-side" id="cmpSideB"></div>
+      </div>
+
+      <section class="panel panel-visible">
+        <div class="panel-head cmp-head">
+          <h2 id="cmpTitle">Specs</h2>
+          <div class="bucket-tabs" id="cmpBuckets" hidden>
+            <button class="tab active" data-bucket="all">All</button>
+            <button class="tab" data-bucket="added">Added</button>
+            <button class="tab" data-bucket="removed">Removed</button>
+            <button class="tab" data-bucket="changed">Changed</button>
+          </div>
+          <div class="dd small" id="cmpEventDD" data-filter-cell="1">
+            <button type="button" class="dd-btn" id="cmpEventBtn"><span class="dd-fixed-label">Event</span><span id="cmpEventBtnLabel"></span><span class="caret">&#9662;</span></button>
+            <div class="dd-panel" id="cmpEventPanel" hidden></div>
+          </div>
+          <div class="dd small" id="cmpFieldDD" data-filter-cell="1">
+            <button type="button" class="dd-btn" id="cmpFieldBtn"><span class="dd-fixed-label">Field</span><span id="cmpFieldBtnLabel"></span><span class="caret">&#9662;</span></button>
+            <div class="dd-panel" id="cmpFieldPanel" hidden></div>
+          </div>
+          <label class="check-inline cmp-deco"><input type="checkbox" id="cmpDecoratedChk" checked> <span>Decorated Field</span></label>
+        </div>
+        <div class="cmp-summary" id="cmpSummary" hidden></div>
+        <div class="cmp-single" id="cmpSingle" hidden></div>
+        <div class="cmp-scroll" id="cmpList" hidden></div>
+        <div class="empty-state" id="cmpEmpty" hidden></div>
+      </section>
+
+    </main>
+
+  </div>
+
   <div class="empty-state" id="fatal" hidden></div>
 
 </div>
-<script src="app.js?v=12"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>

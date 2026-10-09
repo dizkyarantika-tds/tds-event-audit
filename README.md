@@ -183,6 +183,45 @@ the current main-filter scope (not global) — its Package Version column
 lists every package version contributing to that context; click a row to
 jump the deepdive there instead of going back.
 
+A **Compare specs** button next to the package line under the event name
+opens Page 3 pre-filtered to this event — see below.
+
+## Page 3 — Compare specs
+
+Opened from the Layer-1 header button or the deepdive's subtitle button.
+Compares any two specs side by side; neither side has to be a row in the
+tables. Each side is either an **App** (app name + app version: what the
+game actually fires, i.e. `MATCH_STATUS` `BOTH`/`GAME_ONLY`, with the
+observed `TYPE_GAME`) or a **Package** (package name + package version: what
+the package declares, with the declared type). The Layer-1 filters and RC
+Version don't apply here; the page has its own Event / Field dropdowns and
+a **Decorated Field** checkbox (checked by default).
+
+**A is the old side, B the new one.** Per field: only in B → `Added`, only
+in A → `Removed`, in both with a different type → `Type-changed`, else
+`Unchanged`. App and package types use different vocabularies, so an
+App-vs-Package comparison uses the same `typesCompatible` rule as the
+deepdive instead of string equality. Per event: only in B → Added, only in
+A → Removed, any non-unchanged field → Changed. The Events strip counts
+events (after the Event filter; Field/Decorated filters apply before
+counting fields); the All/Added/Removed/Changed tabs only filter which field
+rows are listed. With only one side set, the page lists that side's spec.
+
+Pre-fill: from the deepdive, A = the package that declares the event (the
+alphabetically first one if several do) at its package version base, B =
+the app version you're looking at — so Added = fields the game fires that
+the package doesn't declare, Removed = declared fields the game doesn't
+fire. From Layer 1, A is pre-set when the filters narrow to exactly one app
++ app version (or one package + package version). Sides are kept between
+visits; ⇄ swaps them.
+
+Package specs come from `pkgSpec` in the dataset
+(`TDS_DB.BI_DEV.ANALYTICS_EVENT_SPEC`, every published package version,
+including ones no app has shipped yet). A dataset without `pkgSpec` falls
+back to the declared rows of the reconciliation table, keyed by
+`PACKAGE_VERSION_BASE` (the same version string the spec table uses), so
+only package versions some app actually ships can be picked.
+
 Type compatibility (`app.js: pkgTypeBucket` / `gameTypeBucket` /
 `typesCompatible`): `int/long/float/double/decimal` → number, `bool` →
 boolean, `T[]`/`Dictionary<...>` accept a `string` observation (common
@@ -196,6 +235,13 @@ fact rows, ~8.8 MB for 152,992 facts, 16 columns including `EVENT_MATCH_STATUS`)
 
 - `raw_main.json` — `SELECT ... MATCH_STATUS, EVENT_MATCH_STATUS, ... WHERE MATCH_STATUS IN ('BOTH','PACKAGE_ONLY') AND APP_NAME IS NOT NULL` (55,625 rows)
 - `raw_gameonly.json` — `MATCH_STATUS='GAME_ONLY'`, plus `EVENT_MATCH_STATUS`, scoped to app-versions already in the main pull (97,367 rows, see "Why GAME_ONLY is scoped" above)
+
+The production dataset is built by the Airflow task
+`refresh_event_audit_tool` (tds-dsi-pipelines,
+`dags/dsi_analytics_event_spec_reconciliation/`), which also adds
+`pkgSpec`: `SELECT DISTINCT PACKAGE, VERSION, EVENT, FIELD_NAME, DATA_TYPE,
+DECORATED_BY FROM TDS_DB.BI_DEV.ANALYTICS_EVENT_SPEC`, stored as rows of
+string indices `[package, version, event, field, type, decorated_by]`.
 
 To refresh: re-run both pulls, overwrite the two raw files, `python3
 build_dataset.py`, then **bump the `?v=` query on `app.js`/`styles.css` in
